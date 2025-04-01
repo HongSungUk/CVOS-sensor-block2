@@ -11,6 +11,20 @@ import numpy as np
 import time
 import pandas as pd
 import os
+import onnx
+import onnxruntime
+import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter, butter, filtfilt
+
+base_points_ = np.array([
+    [80, 80], [120, 80], [160, 80], [200, 80], 
+    [80, 120], [120, 120], [160, 120], [200, 120], 
+    [80, 160], [120, 160], [160, 160], [200, 160], 
+    [80, 200], [120, 200], [160, 200], [200, 200]
+])
+ 
+x_base_ave = np.average(base_points_[:, 0])  # 모든 x값의 중앙값
+y_base_ave = np.average(base_points_[:, 1])  # 모든 y값의 중앙값
 
 # Definition 
 def length_cal(layer_name):
@@ -96,6 +110,33 @@ def save_dataframe_to_csv(df, base_filename, directory='.'):
     df.to_csv(full_path, index=False)
     print(f"DataFrame saved to {full_path}")
     
+class VAD:
+    def __init__(self, ws=40):
+        self.ws = ws
+        self.prev_det = 0
+        self.sidx, self.eidx = None, None
+        
+    def process(self, dX):
+        if 200 <= len(dX):
+            sidx, eidx = len(dX)-200, len(dX)
+            energy = np.convolve(np.array(dX[sidx:eidx])**2, np.ones(self.ws), mode='same')[-1]
+            det = 1 if energy > 0.2 else 0
+            if det == 1 and self.prev_det == 0:
+                self.sidx = len(dX)-40
+                print('detection')
+            if det == 0 and self.prev_det == 1:
+                self.eidx = len(dX)
+                self.prev_det = det
+                print('detection end')
+                if self.eidx - self.sidx < 40:
+                    return None
+                else:
+                    return (self.sidx, self.eidx)
+            
+            self.prev_det = det
+        
+        return None
+    
 # Video size
 h = 240
 w = 320
@@ -105,9 +146,41 @@ RAN = 12.0
 nn = 40
 frame_to_frame_threshold = 50
 
+# Lowpass filter setting
+cutoff = 50  # 컷오프 주파수 (Hz)
+fs = 400  # 샘플링 주파수 (Hz)
+
+# AI setting
+m = np.array([ 0.01101787, -0.08154711, -0.08085087, -0.06537464,  0.01250736,
+        -0.01501635, -0.03754331, -0.07308707,  0.01298249, -0.01456766,
+        -0.04040044, -0.08122161,  0.01485771, -0.01968408, -0.04863865,
+        -0.0836504 ,  0.04810532,  0.05571832,  0.06258304,  0.06773298,
+         0.02496464,  0.02859562,  0.02771544,  0.0300467 ,  0.00186762,
+         0.00132042,  0.00528586,  0.00328548, -0.03397644, -0.02812148,
+        -0.03323243, -0.03772861])
+std = np.array([18.68494827, 17.63796103, 17.24798101, 16.84870937, 18.8214065 ,
+        16.25683317, 15.6544831 , 17.08260593, 19.33553814, 16.75399884,
+        16.01309566, 17.54789634, 20.07473589, 17.58538439, 16.75442474,
+        18.32001027,  9.60534252, 10.12960867, 10.96156562, 11.16809471,
+         5.84954955,  5.93505689,  6.22887152,  6.68406187,  6.36141177,
+         5.66037069,  5.48262482,  5.7364871 , 11.45549095, 11.9627257 ,
+        12.56728805, 12.10158403])
+
+vad = VAD()
+onnx_model = onnx.load('TF_32_v2.onnx')
+onnx.checker.check_model(onnx_model)
+ort_session = onnxruntime.InferenceSession('TF_32_v2.onnx', providers=['CPUExecutionProvider'])
+
+word_list = ['Alfa', 'Bravo', 'Charlie', 'Delta',\
+             'Echo', 'Foxtrot', 'Golf', 'Hotel',\
+             'India', 'Juliett', 'Kilo', 'Lima',\
+             'Mike', 'November', 'Oscar', 'Papa',\
+             'Quebec', 'Romeo', 'Sierra', 'Tango',\
+             'Uniform', 'Victor', 'Whiskey', 'Xray',\
+             'Yankee', 'Zulu']
 picam2 = Picamera2()
 config = picam2.create_preview_configuration(main={'size': (w, h)}, raw={'format': 'SRGGB8', 'size': (1640, 1232), 'crop_limits': (1000, 750, 3280, 2464)}, 
-                                              controls={"FrameRate": 150, "ScalerCrop": (1000, 750,  3280, 2464), 'FrameDurationLimits': (3333, 33333)}, buffer_count=10) #fps 42 good
+                                             controls={"FrameRate": 150, "ScalerCrop": (1000, 750,  3280, 2464), 'FrameDurationLimits': (3333, 33333)}, buffer_count=10) #fps 42 good
 picam2.configure(config)
 print('high speed active')
 picam2.start()
@@ -127,8 +200,8 @@ sharpening_mask = np.array([[-1, -1, -1], [-1, 11, -1], [-1, -1, -1]]) #Custom s
 clahe = cv2.createCLAHE(clipLimit=8.0, tileGridSize=(8,8)) #CLAHE
 cut = 5 # Boundary cutter  default : 10
 median_area = 1500 # Median area 500
-# ref_center_point = (140, 120) # Center points
-ref_center_point = (160, 120)
+ref_center_point = (140, 120) # Center points
+# ref_center_point = (w/2, h/2)
 initialize_time = 50000 # Initialize start time
 area_threshold = w/4
 
@@ -174,6 +247,10 @@ map_0to5_TR = []
 map_0to5_BL = []
 map_0to5_BR = []
 
+dX_list, X_list, X_avg_list = [], [], []
+data_list, ddata_list, avg_data_list = [], [], []
+total_data_list = []
+
 frame_count = 0
 MOI_time = 0
 start_time = time.time()
@@ -211,6 +288,7 @@ while True:
     list_contour = list(contour)
     
     median_area = np.median([cv2.contourArea(list_contour[c]) for c in range(len(list_contour))])
+#     print(median_area)
     list_contour2 = []
     for i in range(len(list_contour)):
         if median_area*0.2 < cv2.contourArea(list_contour[i]) < median_area*50: list_contour2.append(list_contour[i]) 
@@ -246,6 +324,7 @@ while True:
     # Reconsider of center point 
         cp_dist_list0 = []
         index_list0 = []
+        #ref_center_point = (np.average(center_point_contour_df[:, 0]), np.average(center_point_contour_df[:, 1]))
         for i in range(len(center_point_contour_df)):
             cp_dist = Euclidian_distance(center_point_contour_df[i], ref_center_point)  
             cp_dist_list0.append(cp_dist)
@@ -290,7 +369,8 @@ while True:
             remaining_points_list2 = []
             remaining_points_list3 = []
             remaining_points_list4 = []
-                 
+            
+            #print(np.array(changed_index))            
             p_first = np.array(sorted(changed_index, key=lambda p: (p[0]) + (p[1])))[0]
             p_fourth = np.array(sorted(changed_index, key=lambda p: (p[0]) - (p[1])))[-1]
             p_second_ref = np.array([(- p_first[0] + p_fourth[0])*1/3 + p_first[0], (p_first[1] + p_fourth[1])/2])
@@ -497,7 +577,190 @@ while True:
         angle_dist_quadrant_3_all.append(np.average(angle_dist_quadrant_3))
         angle_dist_quadrant_4_all.append(np.average(angle_dist_quadrant_4))     
         MOI_time_list.append(time.time())
+        
+        X_list.append(pixel_dist_X_all[-1])
+        x_avg = np.mean(X_list[-5:])
+        X_avg_list.append(x_avg)
+        
+        data = pixel_dist_X + pixel_dist_Y
+        data_list.append(data)
+        
+        if len(pixel_dist_X_all) == 1:
+            dX_list.append(0)
+            ddata = [0]*32
+        else:
+            dX_list.append(X_avg_list[-1] - X_avg_list[-2])
+            ddata = ((np.array(data_list[-1])-np.array(data_list[-2]))/(np.array(MOI_time_list[-1])-np.array(MOI_time_list[-2]))).tolist()
+            
+        avg_data_list.append(ddata)
+        
+        if len(avg_data_list) < 5:
+            total_data_list.append(ddata)
+        else:
+            ddata = np.mean(avg_data_list[-5:],-2).tolist()
+            total_data_list.append(ddata)
+            
+        interval = vad.process(dX_list)
+        
+        if interval != None:
+            start, end = interval
 
+            # calculate init cord data
+            points = init_cord_list[start]
+            x_ave = np.average(points[:,0])
+            y_ave = np.average(points[:,1])
+            adjusted_base_points = base_points_ + [x_ave-x_base_ave, y_ave-y_base_ave]
+            x2 = np.sqrt((points[:, 0] - adjusted_base_points[:, 0])**2 + (points[:, 1] - adjusted_base_points[:, 1])**2)
+            x2 = x2.reshape(1,-1) / 10
+            
+            real_data = np.array(total_data_list)
+            x1 = real_data[start:end]
+            x1 = (x1-m)/std
+            pad_len = 200 - len(x1)
+            left_pad, right_pad = np.zeros((int(pad_len//2), 32)), np.zeros((pad_len-int(pad_len//2), 32))
+            x1 = np.concatenate([left_pad, x1, right_pad], axis=0)
+#             x1 = moving_window_apply(x1, 5, 1)
+            for i in range(32):
+                x1[:,i] = butter_lowpass_filter(x1[:,i], cutoff, fs)
+#             x1[:,16:31] = 0  
+            x1 = np.expand_dims(x1, axis=0).transpose(0,2,1)
+            x1_origin = x1.copy()
+            
+        # Create a dummy input to test the model
+            x1 = x1.astype(np.float32)
+            x2 = x2.astype(np.float32) 
+            
+            input_name1 = ort_session.get_inputs()[0].name
+            input_name2 = ort_session.get_inputs()[1].name
+            output_name = ort_session.get_outputs()[0].name
+
+            outputs = ort_session.run([output_name], {input_name1: x1, input_name2: x2})
+            
+        # Run inference
+            outputs = outputs[0]
+            outputs = np.exp(outputs) / np.sum(np.exp(outputs))
+            
+            # outputs 배열의 최대값의 인덱스를 찾아 출력
+            max_index = np.argmax(outputs)
+            total_sum = np.sum(outputs)
+            max_percentage = (outputs[0][max_index] / total_sum) * 100
+            word = word_list[max_index]
+            print(f"Word: {word}, {max_percentage:.2f}%")
+            
+        else:
+            max_index = -1
+        
+        if len(center_point_contour_df_list) >1 :
+            # Define source and destination points
+            src_pts = center_point_contour_df_list
+            dst_pts = center_point_contour_df
+    
+            # Align to the same dimensions
+            if src_pts.shape != dst_pts.shape:
+                min_len = min(len(src_pts), len(dst_pts))
+                src_pts = src_pts[:min_len, :]
+                dst_pts = dst_pts[:min_len, :]
+    
+            # Sort the corresponding points and make sure that adjacent points correspond to each other
+            src_pts, dst_pts = find_corresponding_points3(src_pts, dst_pts, frame_to_frame_threshold)
+            
+            # Calculate homography matrix with RANSAC method
+            M, _ = cv2.findHomography(src_pts, dst_pts)
+                                      
+            # Initialize the maps
+            strain_map2 = np.zeros((int(h/nn), int(w/nn)), np.float32)
+            strain_direction_map2 = np.zeros((int(h/nn), int(w/nn)), np.float32)
+    
+            # Minimize unnecessary computation
+            x_coords = np.arange(0, w+nn, nn)
+            x_coords[len(x_coords)-1] = w-1
+            y_coords = np.arange(0, h+nn, nn)
+            y_coords[len(y_coords)-1] = h-1
+            X, Y = np.meshgrid(x_coords, y_coords)
+            ones = np.ones_like(X)
+            
+            # Transform the points
+            pts = np.stack([X, Y, ones], axis=-1)
+            pts_transformed = np.matmul(M, pts.reshape((-1, 3)).T)
+            pts_transformed /= pts_transformed[2]
+            pts_transformed = pts_transformed.reshape((3, int(h/nn)+1, int(w/nn)+1))
+            
+            # Calculate strain map and direction map
+            dx = pts_transformed[0] - X
+            dy = pts_transformed[1] - Y
+            strain_map2 = np.sqrt(dx ** 2 + dy ** 2)
+            theta = np.arctan2(dy, dx)
+            strain_direction_map2 = theta
+            
+            strain_map3 = np.array(strain_map2.flatten())
+            p1 = np.percentile(strain_map3, 1)
+            p99 = np.percentile(strain_map3, 99)
+            strain_map3 = np.clip(strain_map3, p1, p99)
+            strain_map3[strain_map3<p1] = 0            
+            strain_map3 /= np.max(strain_map3)
+            
+            # Weighted average direction
+            x = strain_map3*np.cos(strain_direction_map2.flatten())
+            y = strain_map3*np.sin(strain_direction_map2.flatten())
+            
+            average_direction = np.degrees(np.arctan2(np.average(y),np.average(x)))
+            top_left_average_direction = np.degrees(np.arctan2(np.average(y[np.concatenate((np.arange(0, 4), np.arange(9, 13), np.arange(18, 22), np.arange(27, 31)))]),
+                                                               np.average(x[np.concatenate((np.arange(0, 4), np.arange(9, 13), np.arange(18, 22), np.arange(27, 31)))])))
+            top_right_average_direction = np.degrees(np.arctan2(np.average(y[np.concatenate((np.arange(4, 8), np.arange(13, 17), np.arange(22, 26), np.arange(31, 35)))]),
+                                                                np.average(x[np.concatenate((np.arange(4, 8), np.arange(13, 17), np.arange(22, 26), np.arange(31, 35)))])))
+            bottom_left_average_direction = np.degrees(np.arctan2(np.average(y[np.concatenate((np.arange(27, 31), np.arange(36, 40), np.arange(45, 46), np.arange(54, 58)))]),
+                                                                  np.average(x[np.concatenate((np.arange(27, 31), np.arange(36, 40), np.arange(45, 46), np.arange(54, 58)))])))
+            bottom_right_average_direction = np.degrees(np.arctan2(np.average(y[np.concatenate((np.arange(31, 35), np.arange(40, 44), np.arange(49, 53), np.arange(58, 62)))]),
+                                                                   np.average(x[np.concatenate((np.arange(31, 35), np.arange(40, 44), np.arange(49, 53), np.arange(58, 62)))])))
+         
+            map_0to5.append(average_direction)        
+            map_0to5_TL.append(top_left_average_direction)        
+            map_0to5_TR.append(top_right_average_direction)        
+            map_0to5_BL.append(bottom_left_average_direction)        
+            map_0to5_BR.append(bottom_right_average_direction)  
+            
+            if len(map_0to5) > 5 :
+                map_0to5 = map_0to5[1:]
+                average_direction = 0.075829384*angle_dist_all[0] + 0.113744076*angle_dist_all[1] + 0.170616114*angle_dist_all[2] + 0.255924171*angle_dist_all[3] + 0.383886256*angle_dist_all[4]
+            
+                map_0to5_TL = map_0to5_TL[1:]
+                top_left_average_direction = 0.075829384*map_0to5_TL[0] + 0.113744076*map_0to5_TL[1] + 0.170616114*map_0to5_TL[2] + 0.255924171*map_0to5_TL[3] + 0.383886256*map_0to5_TL[4]
+            
+                map_0to5_TR = map_0to5_TR[1:]
+                top_right_average_direction = 0.075829384*map_0to5_TR[0] + 0.113744076*map_0to5_TR[1] + 0.170616114*map_0to5_TR[2] + 0.255924171*map_0to5_TR[3] + 0.383886256*map_0to5_TR[4]
+         
+                map_0to5_BL = map_0to5_BL[1:]
+                bottom_left_average_direction = 0.075829384*map_0to5_BL[0] + 0.113744076*map_0to5_BL[1] + 0.170616114*map_0to5_BL[2] + 0.255924171*map_0to5_BL[3] + 0.383886256*map_0to5_BL[4]
+            
+                map_0to5_BR = map_0to5_BR[1:]
+                bottom_right_average_direction = 0.075829384*map_0to5_BR[0] + 0.113744076*map_0to5_BR[1] + 0.170616114*map_0to5_BR[2] + 0.255924171*map_0to5_BR[3] + 0.383886256*map_0to5_BR[4]
+            
+            # total directions save
+            directions.append([average_direction, top_left_average_direction, top_right_average_direction, bottom_left_average_direction, bottom_right_average_direction])
+            
+            # strain alignment ratio (0: good / 100: bed)
+            degree_map = np.degrees(np.arctan2(np.sin(strain_direction_map2.flatten()),np.cos(strain_direction_map2.flatten())))
+            st_ratio = np.average(abs(average_direction - degree_map)/180)*100
+            
+            if np.average(strain_map2) < 1.5:
+                average_direction = 0
+                top_left_average_direction = 0
+                top_right_average_direction = 0
+                bottom_left_average_direction = 0
+                bottom_right_average_direction = 0
+                st_ratio = 0
+                
+            average_direction = -round(average_direction, 2)
+            top_left_average_direction = -round(top_left_average_direction, 2)
+            top_right_average_direction = -round(top_right_average_direction, 2)
+            bottom_left_average_direction = -round(bottom_left_average_direction, 2)
+            bottom_right_average_direction = -round(bottom_right_average_direction, 2)
+            st_ratio = round(st_ratio, 2)
+                                   
+            # Draw strain direction arrows on the image
+            for x, y, dx, dy in zip(X.flatten(), Y.flatten(), dx.flatten(), dy.flatten()):
+                cv2.arrowedLine(img, (int(x), int(y)), (int(x+dx), int(y+dy)), color=(255,0,0), thickness=2, tipLength=0.2)
+         
     if time.time() - start_time >= 1.0:
         fps = frame_count / (time.time() - start_time)
         print(f"FPS:{fps:.2f}")
@@ -508,7 +771,7 @@ while True:
 
     # Display the image
     cv2.imshow('strain_map', cv2.resize(img, dsize=(640, 480), interpolation=cv2.INTER_AREA))
-   
+    
     # Break rules
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
@@ -543,15 +806,3 @@ all_data = np.array([pixel_dist_X_all, pixel_dist_Y_all, quadrant_1_x_all,
 quadrant_1_y_all, quadrant_2_x_all, quadrant_2_y_all,quadrant_3_x_all, quadrant_3_y_all,
 quadrant_4_x_all, quadrant_4_y_all, angle_dist_all, angle_dist_quadrant_1_all, angle_dist_quadrant_2_all,
 angle_dist_quadrant_3_all, angle_dist_quadrant_4_all, MOI_time_list]).T
-
-all_data_df = pd.DataFrame(all_data, columns=['X', 'Y', 'q1_x', 'q1_y', 'q2_x', 'q2_y', 'q3_x', 'q3_y', 'q4_x', 'q4_y', 
-                                              'total_angle', 'q1_angle', 'q2_angle', 'q3_angle', 'q4_angle','Time'])
-
-flatten_init_cord_list = [np.array(sublist).flatten() for sublist in init_cord_list]
-flatten_init_cord_list = np.vstack(flatten_init_cord_list)
-flatten_init_cord_list = pd.DataFrame(flatten_init_cord_list, columns=['0x', '0y', '1x', '1y', '2x', '2y', '3x', '3y', '4x', '4y', '5x', '5y', '6x', '6y', '7x', '7y', 
-                                                          '8x', '8y', '9x', '9y', '10x', '10y', '11x', '11y', '12x', '12y', '13x', '13y', '14x', '14y', 
-                                                          '15x', '15y'])
-                                      
-save_dataframe_to_csv(flatten_init_cord_list, '250120_performance_test_raw_data.csv')
-save_dataframe_to_csv(all_data_df, '250120_performance_test.csv')
