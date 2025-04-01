@@ -179,18 +179,12 @@ MOI_time = 0
 start_time = time.time()
 
 start_time0 = time.time()
-#while(cap.isOpened()):
 while True:
-    # ret, frame = cap.read()
     frame = picam2.capture_array()
     MOI_start = time.time()
     img = frame
     
     frame_count += 1
-    # Camera calibration    
-    # img = cv2.undistort(img,mtx,dist,None,newcameraMtx)
-    # img = img[y_r:y_r+h_r,x_r:x_r+w_r]
-    #img = cv2.resize(img, dsize=(w, h), interpolation=cv2.INTER_AREA)  
     img = cv2.flip(img, 1)
     
     # Image processing process        
@@ -217,7 +211,6 @@ while True:
     list_contour = list(contour)
     
     median_area = np.median([cv2.contourArea(list_contour[c]) for c in range(len(list_contour))])
-#     print(median_area)
     list_contour2 = []
     for i in range(len(list_contour)):
         if median_area*0.2 < cv2.contourArea(list_contour[i]) < median_area*50: list_contour2.append(list_contour[i]) 
@@ -253,7 +246,6 @@ while True:
     # Reconsider of center point 
         cp_dist_list0 = []
         index_list0 = []
-        #ref_center_point = (np.average(center_point_contour_df[:, 0]), np.average(center_point_contour_df[:, 1]))
         for i in range(len(center_point_contour_df)):
             cp_dist = Euclidian_distance(center_point_contour_df[i], ref_center_point)  
             cp_dist_list0.append(cp_dist)
@@ -298,8 +290,7 @@ while True:
             remaining_points_list2 = []
             remaining_points_list3 = []
             remaining_points_list4 = []
-            
-            #print(np.array(changed_index))            
+                 
             p_first = np.array(sorted(changed_index, key=lambda p: (p[0]) + (p[1])))[0]
             p_fourth = np.array(sorted(changed_index, key=lambda p: (p[0]) - (p[1])))[-1]
             p_second_ref = np.array([(- p_first[0] + p_fourth[0])*1/3 + p_first[0], (p_first[1] + p_fourth[1])/2])
@@ -456,8 +447,6 @@ while True:
             angle_diff = angle_t - angle_0
             angle_dist.append(angle_diff)
         
-        # print('Average of angle change (degree): %.1f'% np.average(angle_dist))
-
         # Local x, y change
         quadrant_1_indices = [2, 3, 6, 7]
         quadrant_2_indices = [0, 1, 4, 5]
@@ -491,10 +480,7 @@ while True:
         # Weight for MOI         
         if len(init_cord_0to5) == 6 :
            init_cord = 0.075829384*init_cord_0to5[0] + 0.113744076*init_cord_0to5[1] + 0.170616114*init_cord_0to5[2] + 0.255924171*init_cord_0to5[3] + 0.383886256*init_cord_0to5[4]
-
-        # Result print
-        # print('Average of pixel change (X): %.2f'% (np.average(pixel_dist_X)))
-        # print('Average of pixel change (Y): %.2f'% (np.average(pixel_dist_Y)))               
+       
         pixel_dist_X_all.append(np.average(pixel_dist_X))
         pixel_dist_Y_all.append(np.average(pixel_dist_Y))      
         quadrant_1_x_all.append(np.average(quadrant_1_x))
@@ -551,7 +537,6 @@ cv2.destroyAllWindows()
 
 all_time = start_time - start_time0
 print(f"full_time:{all_time:.2f}")
-# 
 MOI_time_list = np.array(MOI_time_list)-MOI_time_list[0]
 
 all_data = np.array([pixel_dist_X_all, pixel_dist_Y_all, quadrant_1_x_all, 
@@ -570,4 +555,3 @@ flatten_init_cord_list = pd.DataFrame(flatten_init_cord_list, columns=['0x', '0y
                                       
 save_dataframe_to_csv(flatten_init_cord_list, '250120_performance_test_raw_data.csv')
 save_dataframe_to_csv(all_data_df, '250120_performance_test.csv')
-
